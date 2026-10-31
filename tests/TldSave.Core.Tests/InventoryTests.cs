@@ -86,6 +86,53 @@ public class InventoryTests : IDisposable
         Assert.Null(item.Gear["m_StackableItemSerialized"]);
     }
 
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    public void Non_finite_condition_edits_do_not_change_item_data(double value)
+    {
+        var inventory = Inventory.Load(SaveFile.Load(TestFiles.Fixture(TestFiles.Small)));
+        var item = inventory.Items.First();
+        item.Gear["m_WornOut"] = true;
+        var original = item.Gear.DeepClone();
+        var changeRaised = false;
+        item.PropertyChanged += (_, _) => changeRaised = true;
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => item.Condition = value);
+        Assert.Throws<ArgumentOutOfRangeException>(() => item.ConditionPercent = value);
+
+        Assert.True(JToken.DeepEquals(original, item.Gear));
+        Assert.False(changeRaised);
+    }
+
+    [Fact]
+    public void Existing_non_finite_item_tokens_survive_an_unrelated_edit()
+    {
+        var path = files.Copy(TestFiles.Small);
+        var save = SaveFile.Load(path);
+        var inventory = Inventory.Load(save);
+        var item = inventory.Items.First(i => i.IsStackable);
+        item.Gear["m_NormalizedCondition"] = double.NaN;
+        item.Gear["m_UnknownFutureValue"] = double.NegativeInfinity;
+        var itemId = (int)item.Gear["m_InstanceIDProxy"]!;
+        inventory.Commit();
+        save.Save(path);
+
+        save = SaveFile.Load(path);
+        inventory = Inventory.Load(save);
+        item = inventory.Items.Single(i => (int)i.Gear["m_InstanceIDProxy"]! == itemId);
+        Assert.True(double.IsNaN(item.Condition!.Value));
+        item.Units = 17;
+        inventory.Commit();
+        save.Save(path);
+
+        var reloaded = Inventory.Load(SaveFile.Load(path)).Items.Single(i => (int)i.Gear["m_InstanceIDProxy"]! == itemId);
+        Assert.True(double.IsNaN(reloaded.Condition!.Value));
+        Assert.Equal(double.NegativeInfinity, (double)reloaded.Gear["m_UnknownFutureValue"]!);
+        Assert.Equal(17, reloaded.Units);
+    }
+
     [Fact]
     public void Added_items_never_reuse_an_instance_id()
     {

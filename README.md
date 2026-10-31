@@ -1,4 +1,23 @@
-# TLD Survival Save Editor
+# TLD Survival Save Editor Improved
+
+This is [dismalnow's fork](https://github.com/dismalnow/TldSaveEditorWindows_Improveed) of
+[YohanWD/TldSaveEditorWindows](https://github.com/YohanWD/TldSaveEditorWindows), based on upstream v1.2.1.
+The first improvement build is **1.3.0-preview.1**.  It focuses on preserving saves and making editing more predictable.
+
+## What this fork improves
+
+- Unedited sections retain their original compressed data even when their JSON has different whitespace or number formatting.
+- Saving refuses to overwrite a changed or deleted source file.  The check includes file contents, and staged writes check the destination again before replacement.
+- Each write uses its own temporary file.  Invalid save structure, duplicate JSON keys, and trailing JSON content are rejected before replacement.
+- Numeric edits reject NaN and infinity.  Maxing skills preserves missing or unsupported skill data, and the UI blocks saves with invalid numeric input.
+- Refresh keeps pending edits, and newly added items are revealed when an inventory filter would hide them.
+- Branches and pull requests build and test automatically, then provide an unsigned Windows preview ZIP.
+
+See [compatibility and verification](docs/COMPATIBILITY.md) for the difference between automated checks and
+in-game testing.  See [development setup](docs/DEVELOPMENT.md) for Git remotes, VS Code workspaces outside the
+repository, and build commands.
+
+## Original editor features
 
 A save editor for **The Long Dark, Survival mode**, for Windows.
 
@@ -24,14 +43,16 @@ Licensed under the [MIT License](LICENSE). Third-party notices: [THIRD_PARTY_NOT
 
 ## Download
 
-1. Open the **Releases** page of this repository.
-2. Download the latest `TldSaveEditor-x.y.z-win-x64.zip`.
-3. Extract the zip anywhere (e.g. your Desktop) and run **`TldSaveEditor.exe`**.
+For development previews, open this fork's **Actions** tab, choose a successful **Build** run for the branch
+or pull request, and download its `TldSaveEditor-...-win-x64-unsigned` artifact.  Extract the artifact and the
+ZIP inside it, then run **`TldSaveEditor.exe`**.  GitHub requires sign-in to download Actions artifacts.
+
+Published versions, when available, appear on this fork's **Releases** page as `TldSaveEditor-x.y.z-win-x64.zip`.
+The original upstream releases are separate from this fork's preview builds.
 
 Nothing else to install: the .NET runtime is included in the exe. It needs **Windows 10 or 11, 64-bit**.
 
-The first time, Windows may show *"Windows protected your PC"*, because the exe isn't code-signed.
-Click **More info**, then **Run anyway**.
+The executable is unsigned.  Preview packages include `PREVIEW.txt`, identifying the source commit and build run.
 
 ---
 
@@ -80,10 +101,10 @@ So: quit the game completely, edit, save in the editor, then start the game.
 The editor protects you from these mistakes:
 - **Save** and **Restore** refuse to run while the game (`tld.exe`) is running. Your edits stay in the editor;
   quit the game and click Save again.
-- If the save file changed after you opened it in the editor (e.g. the game autosaved), **Save warns you**
-  before replacing that newer version.
-- Saves are written to a temporary file, checked, and only then swapped in. A crash or a full disk while
-  saving can't leave a half-written save.
+- If the save file changed or disappeared after you opened it, **Save stops**.  Use **Reload save** to load
+  the current file before editing again.  File contents are checked even if the modification time was preserved.
+- Saves are written to a unique temporary file, checked, and only then swapped in.  A failed write leaves
+  the destination unchanged, and a destination change detected during staging prevents replacement.
 
 ---
 
@@ -189,10 +210,11 @@ SlotData.m_Dict[key] = base64 -> LZF( JSON )          boot, global, info, screen
 inside sections      = many values are JSON strings containing more JSON (TldJson.ReadNested / WriteNested)
 ```
 
-On save, only edited sections are re-encoded. `SaveFile` keeps a SHA-256 fingerprint of each section's JSON
-from load; sections whose JSON still matches keep the game's original bytes. An edit to the player rewrites
+On save, only edited sections are re-encoded.  `SaveFile` keeps a SHA-256 fingerprint of each parsed section's
+normalized JSON from load; sections whose JSON still matches keep the game's original bytes, including their
+original whitespace and numeric spelling.  An edit to the player rewrites
 only `global` (and `info` for condition), and all scenes stay as the game wrote them. Files are written to
-`<save>.tmp`, verified by loading them back, then swapped in with `File.Replace`.
+an operation-specific temporary file, verified by loading them back, then swapped in with `File.Replace`.
 
 ## Player tab fields
 
@@ -230,8 +252,12 @@ This produces a single self-contained `publish\win-x64\TldSaveEditor.exe` (~62 M
 
 ### Releases (GitHub Actions)
 
-[.github/workflows/build.yml](.github/workflows/build.yml) builds the exe when a version tag is pushed, and
-creates a GitHub Release with the zip. **Push the commit first, then the tag.**
+[.github/workflows/build.yml](.github/workflows/build.yml) builds and tests the solution on branch pushes,
+pull requests, and manual runs.  Successful development runs attach an unsigned preview ZIP with the executable,
+license, notices, README, and source/build details.  Test results and preview packages are retained for 14 days.
+
+Pushing a version tag builds and tests that commit, then creates a GitHub Release with its versioned ZIP.
+**Push the commit first, then the tag.**
 
 ```
 git push origin master
@@ -239,8 +265,8 @@ git tag v1.0.1
 git push origin v1.0.1
 ```
 
-The tag sets the version (`v1.0.1` → 1.0.1). To test a build without releasing, open the Actions tab, select
-*Build*, and click *Run workflow*. The exe is attached to the run under *Artifacts*.
+The tag sets the version (`v1.0.1` → 1.0.1).  To build a branch manually, open the Actions tab, select
+*Build*, and click *Run workflow*.  The ZIP is attached to the run under *Artifacts*.
 
 Actions are pinned to commit SHAs, and only the release job can write to the repository.
 [.github/dependabot.yml](.github/dependabot.yml) checks for new action versions weekly and opens a single pull
@@ -252,7 +278,7 @@ request that updates the SHAs and their version comments. Review and merge it.
 dotnet test tests/TldSave.Core.Tests
 ```
 
-`tests/TldSave.Core.Tests` (xUnit, ~75 tests, ~10 s) covers LZF, JSON (NaN/Infinity, dates, depth limit),
+`tests/TldSave.Core.Tests` (xUnit) covers LZF, JSON (NaN/Infinity, dates, depth limit, duplicate keys, complete documents),
 save/load (only edited sections rewritten, crash-safe writes, changed-on-disk detection), inventory, player
 state, the item catalog, and backup / restore (on temp folders, never your real ones). **Close the game before
 running the tests:** the restore tests fail while `tld.exe` is running, like the real Restore button. They run on two real survival saves in `Fixtures/`: `sandbox1_GoDLC` (small) and
@@ -260,7 +286,12 @@ running the tests:** the restore tests fail while `tld.exe` is running, like the
 Don't replace them unless the save format changes (see [Fixtures/README.md](tests/TldSave.Core.Tests/Fixtures/README.md)). Tests never
 touch your real save folder; they work on copies in a temp folder.
 
-The release workflow runs the tests before publishing: **a failing test blocks the release.**
+The workflow runs the tests before packaging: **a failing test blocks the preview or release.**
+
+### Upstream testing history
+
+The following in-game results were reported by **YohanWD for the upstream editor**.  They do not establish
+that this fork has been tested in the game.  This fork's status is recorded in [COMPATIBILITY.md](docs/COMPATIBILITY.md).
 
 - Load and save were checked against 22 real saves: decoded data is identical after a round trip.
 - Validated in game (2026-10-25) with [docs/TEST_SAVE_CHECKLIST.md](docs/TEST_SAVE_CHECKLIST.md): 66 added items

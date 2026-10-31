@@ -38,7 +38,7 @@ public sealed class PlayerState : INotifyPropertyChanged
         get => GetNumber(ConditionField, "m_CurrentHPProxy");
         set
         {
-            SetValue(ConditionField, "m_CurrentHPProxy", Math.Clamp(value, 0, ConditionMax));
+            SetValue(ConditionField, "m_CurrentHPProxy", ClampFinite(value, 0, ConditionMax));
             // The load menu shows this copy
             if (save.Info is { } info) info["m_Condition"] = Condition;
         }
@@ -51,25 +51,25 @@ public sealed class PlayerState : INotifyPropertyChanged
     public double Calories
     {
         get => GetNumber("m_Hunger_Serialized", "m_CurrentReserveCaloriesProxy");
-        set => SetValue("m_Hunger_Serialized", "m_CurrentReserveCaloriesProxy", Math.Clamp(value, 0, MaxCalories));
+        set => SetValue("m_Hunger_Serialized", "m_CurrentReserveCaloriesProxy", ClampFinite(value, 0, MaxCalories));
     }
 
     public double Thirst
     {
         get => GetNumber("m_Thirst_Serialized", "m_CurrentThirstProxy");
-        set => SetValue("m_Thirst_Serialized", "m_CurrentThirstProxy", Math.Clamp(value, 0, 100));
+        set => SetValue("m_Thirst_Serialized", "m_CurrentThirstProxy", ClampFinite(value, 0, 100));
     }
 
     public double Fatigue
     {
         get => GetNumber("m_Fatigue_Serialized", "m_CurrentFatigueProxy");
-        set => SetValue("m_Fatigue_Serialized", "m_CurrentFatigueProxy", Math.Clamp(value, 0, 100));
+        set => SetValue("m_Fatigue_Serialized", "m_CurrentFatigueProxy", ClampFinite(value, 0, 100));
     }
 
     public double Freezing
     {
         get => GetNumber("m_Freezing_Serialized", "m_CurrentFreezingProxy");
-        set => SetValue("m_Freezing_Serialized", "m_CurrentFreezingProxy", Math.Clamp(value, 0, 100));
+        set => SetValue("m_Freezing_Serialized", "m_CurrentFreezingProxy", ClampFinite(value, 0, 100));
     }
 
     /// <summary>Well Fed buff (+5 max condition). The game grants it after 72 h without starving.</summary>
@@ -111,7 +111,7 @@ public sealed class PlayerState : INotifyPropertyChanged
 
     public void MaxAllSkills()
     {
-        foreach (var skill in Skills) skill.Points = skill.MaxPoints;
+        foreach (var skill in Skills.Where(s => s.Exists)) skill.Points = skill.MaxPoints;
     }
 
     public void CureAll()
@@ -131,6 +131,14 @@ public sealed class PlayerState : INotifyPropertyChanged
 
     private double GetNumber(string field, string key) => (double?)Read(field)[key] ?? 0;
     private bool GetBool(string field, string key) => (bool?)Read(field)[key] ?? false;
+
+    // Validate only explicit edits. Existing non-finite tokens elsewhere in a save must be preserved.
+    private static double ClampFinite(double value, double minimum, double maximum)
+    {
+        if (!double.IsFinite(value))
+            throw new ArgumentOutOfRangeException(nameof(value), "Enter a finite number.");
+        return Math.Clamp(value, minimum, maximum);
+    }
 
     private void SetValue(string field, string key, JToken value)
     {
@@ -176,16 +184,19 @@ public sealed class Skill : INotifyPropertyChanged
     public string Name => definition.Name;
     public int MaxPoints => definition.MaxPoints;
 
-    /// <summary>False when the save has no data for this skill (e.g. DLC skills in an old save).</summary>
-    public bool Exists => player.Read(ManagerField)[definition.Field] is { Type: JTokenType.String };
+    /// <summary>False when the save has no editable object for this skill (e.g. DLC skills in an old save).</summary>
+    public bool Exists => ReadSkill() is not null;
+
+    private JObject? ReadSkill() => player.Read(ManagerField).ReadNested(definition.Field) as JObject;
 
     public int Points
     {
-        get => (int?)(player.Read(ManagerField).ReadNested(definition.Field)?["m_Points"]) ?? 0;
+        get => (int?)(ReadSkill()?["m_Points"]) ?? 0;
         set
         {
             var manager = player.Read(ManagerField);
-            var skill = manager.ReadNested(definition.Field) as JObject ?? new JObject();
+            // A bulk action or API caller must not invent a missing skill's save schema.
+            if (manager.ReadNested(definition.Field) is not JObject skill) return;
             skill["m_Points"] = Math.Clamp(value, 0, MaxPoints);
             manager.WriteNested(definition.Field, skill);
             player.Write(ManagerField, manager);

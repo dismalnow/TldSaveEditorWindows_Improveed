@@ -130,6 +130,8 @@ public sealed class InventoryItem : INotifyPropertyChanged
         get => (double?)Gear["m_NormalizedCondition"];
         set
         {
+            if (value is { } number && !double.IsFinite(number))
+                throw new ArgumentOutOfRangeException(nameof(value), "Enter a finite condition value.");
             if (value is null) Gear.Remove("m_NormalizedCondition");
             else Gear["m_NormalizedCondition"] = Math.Clamp(value.Value, 0, 1);
             if (value > 0 && WornOut) Gear["m_WornOut"] = false;

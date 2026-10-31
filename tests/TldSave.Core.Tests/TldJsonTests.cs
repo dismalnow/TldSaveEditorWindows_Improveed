@@ -54,6 +54,38 @@ public class TldJsonTests
         Assert.Null(obj.ReadNested("missing"));
     }
 
+    [Theory]
+    [InlineData("{} {}")]
+    [InlineData("[]\n[]")]
+    [InlineData("null true")]
+    [InlineData("{\"value\":1} trailing")]
+    public void Parse_rejects_content_after_the_first_value(string json)
+    {
+        Assert.Throws<JsonReaderException>(() => TldJson.Parse(json));
+    }
+
+    [Theory]
+    [InlineData("{\"water\":1,\"water\":2}")]
+    [InlineData("{\"outer\":{\"item\":1,\"item\":2}}")]
+    public void Parse_rejects_duplicate_properties_instead_of_losing_data(string json)
+    {
+        Assert.Throws<JsonReaderException>(() => TldJson.Parse(json));
+    }
+
+    [Fact]
+    public void Parse_accepts_trailing_whitespace()
+    {
+        var token = TldJson.Parse("{\"value\":1}\r\n\t ");
+        Assert.Equal(1, (int)token["value"]!);
+    }
+
+    [Fact]
+    public void ReadNested_rejects_a_second_json_value()
+    {
+        var obj = new JObject { ["state"] = "{\"value\":1}{\"value\":2}" };
+        Assert.Throws<JsonReaderException>(() => obj.ReadNested("state"));
+    }
+
     [Fact]
     public void Expand_parses_nested_json_strings_recursively()
     {

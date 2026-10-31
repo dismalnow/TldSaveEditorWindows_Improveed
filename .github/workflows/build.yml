@@ -1,6 +1,7 @@
 # Builds the single-file TldSaveEditor.exe.
+# - Branch pushes and pull requests: build and test, then attach an unsigned Windows preview zip.
 # - Pushing a tag like v1.2.0: build, then create a GitHub Release with the zip, using the tag as version.
-# - "Run workflow" button (Actions tab): test build only, exe attached to the run under Artifacts.
+# - "Run workflow" button (Actions tab): build the selected ref; branches produce a preview, tags a release.
 #
 # Security: actions are pinned to a commit SHA (a tag can be moved to other code, a commit can't).
 # The version each SHA points to is in the comment. Only the release job can write to the repository.
@@ -9,21 +10,31 @@ name: Build
 
 on:
   push:
+    branches: ['**']
     tags: ['v*']
+  pull_request:
   workflow_dispatch:
 
 # Default for every job: read-only
 permissions:
   contents: read
 
+# Replace stale development runs without cancelling a release that is already in progress.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 20
     outputs:
       version: ${{ steps.version.outputs.version }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
@@ -32,45 +43,73 @@ jobs:
       - name: Version
         id: version
         shell: pwsh
+        env:
+          BUILD_REF_TYPE: ${{ github.ref_type }}
+          BUILD_REF_NAME: ${{ github.ref_name }}
         run: |
           # v1.2.0 tag -> 1.2.0; otherwise keep the version from the csproj
-          if ("${{ github.ref_type }}" -eq "tag") {
-            $version = "${{ github.ref_name }}".TrimStart("v")
+          if ($env:BUILD_REF_TYPE -eq "tag") {
+            $version = $env:BUILD_REF_NAME -replace '^v', ''
+            if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+              throw "Release tags must contain a semantic version, for example v1.2.0."
+            }
             "args=-p:Version=$version" >> $env:GITHUB_OUTPUT
+            $packageName = "TldSaveEditor-$version-win-x64"
           } else {
             $version = ([xml](Get-Content src/TldSaveEditor/TldSaveEditor.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
             "args=" >> $env:GITHUB_OUTPUT
+            $packageName = "TldSaveEditor-$version-preview-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-win-x64-unsigned"
           }
           "version=$version" >> $env:GITHUB_OUTPUT
+          "package_name=$packageName" >> $env:GITHUB_OUTPUT
 
       - name: Build solution
         run: dotnet build TldSaveEditor.slnx -c Release
 
       # A failing test stops here: no exe is published and the release job doesn't run
-      - name: Test
-        run: dotnet test tests/TldSave.Core.Tests -c Release --no-build
+      - name: Test solution
+        id: tests
+        run: dotnet test TldSaveEditor.slnx -c Release --no-build --logger trx --results-directory TestResults
+
+      # Upload only structured test results, never save fixtures or temporary editor data.
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-results-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: TestResults/**/*.trx
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Publish exe
         run: dotnet publish src/TldSaveEditor -p:PublishProfile=win-x64 ${{ steps.version.outputs.args }}
 
-      - name: Zip
+      - name: Package Windows build
         shell: pwsh
+        env:
+          PACKAGE_NAME: ${{ steps.version.outputs.package_name }}
+          BUILD_REF_TYPE: ${{ github.ref_type }}
         run: |
-          Compress-Archive -Path publish/win-x64/TldSaveEditor.exe, README.md, LICENSE, THIRD_PARTY_NOTICES.md `
-            -DestinationPath "publish/TldSaveEditor-${{ steps.version.outputs.version }}-win-x64.zip"
+          $files = @('publish/win-x64/TldSaveEditor.exe', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md')
+          if ($env:BUILD_REF_TYPE -ne 'tag') {
+            @(
+              'Unsigned development preview'
+              "Commit: $env:GITHUB_SHA"
+              "Build: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+              'Automated build and test success does not establish in-game compatibility.'
+            ) | Set-Content publish/PREVIEW.txt
+            $files += 'publish/PREVIEW.txt'
+          }
+          Compress-Archive -Path $files -DestinationPath "publish/$env:PACKAGE_NAME.zip"
 
-      # The exe on its own, for test builds (Actions tab > run > Artifacts)
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      # The preview can be downloaded from the run. Tagged builds are handed to the release job.
+      - name: Upload Windows package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: TldSaveEditor-${{ steps.version.outputs.version }}-win-x64
-          path: publish/win-x64/TldSaveEditor.exe
-
-      # The release zip, handed to the release job
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: github.ref_type == 'tag'
-        with:
-          name: release-zip
-          path: publish/TldSaveEditor-${{ steps.version.outputs.version }}-win-x64.zip
+          name: ${{ github.ref_type == 'tag' && 'release-zip' || steps.version.outputs.package_name }}
+          path: publish/${{ steps.version.outputs.package_name }}.zip
+          if-no-files-found: error
+          retention-days: 14
 
   release:
     needs: build
@@ -89,3 +128,4 @@ jobs:
         with:
           files: TldSaveEditor-${{ needs.build.outputs.version }}-win-x64.zip
           generate_release_notes: true
+          prerelease: ${{ contains(needs.build.outputs.version, '-') }}

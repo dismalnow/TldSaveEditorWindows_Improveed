@@ -24,7 +24,20 @@ public static class TldJson
             // error instead of a stack overflow (which can't be caught) in the recursive code that walks it
             MaxDepth = TldJson.MaxDepth,
         };
-        return JToken.ReadFrom(reader);
+        var token = JToken.ReadFrom(reader, new JsonLoadSettings
+        {
+            // Duplicate keys otherwise silently replace earlier game data when a JObject is loaded.
+            DuplicatePropertyNameHandling = DuplicatePropertyNameHandling.Error,
+        });
+
+        // ReadFrom stops at the end of the first value. Consume the rest so a truncated/concatenated
+        // document cannot appear valid simply because its first object happened to parse.
+        while (reader.Read())
+        {
+            if (reader.TokenType != JsonToken.Comment)
+                throw new JsonReaderException("Unexpected content after the JSON value.");
+        }
+        return token;
     }
 
     public static string Serialize(JToken token, bool indented = false)
