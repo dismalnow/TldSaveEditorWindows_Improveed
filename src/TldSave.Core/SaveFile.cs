@@ -13,6 +13,8 @@ namespace TldSave.Core;
 /// </summary>
 public sealed class SaveFile
 {
+    private static readonly UTF8Encoding Utf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
     public string FilePath { get; }
 
     /// <summary>The outer SlotData object. Its m_Dict is rebuilt from <see cref="Sections"/> on save.</summary>
@@ -24,11 +26,14 @@ public sealed class SaveFile
     private readonly Dictionary<string, JToken> sections;
 
     /// <summary>
-    /// SHA-256 of each section's JSON text, matching its encoded value currently in Slot.m_Dict.
-    /// On save, a section whose JSON still has the same fingerprint keeps that encoded value as-is
+    /// SHA-256 of each parsed section's normalized JSON text. On save, a section whose JSON still
+    /// has the same fingerprint keeps its original encoded value as-is
     /// (the game's own bytes), so only edited sections are re-encoded.
     /// </summary>
     private readonly Dictionary<string, byte[]> fingerprints;
+
+    private sealed record DiskState(DateTime WriteTimeUtc, byte[] Fingerprint);
+    private DiskState loadedDiskState;
 
     /// <summary>Sections re-encoded by the last <see cref="Save"/> (the ones that changed).</summary>
     public IReadOnlyList<string> LastSaveChangedSections { get; private set; } = [];
@@ -37,16 +42,25 @@ public sealed class SaveFile
     public DateTime LoadedWriteTimeUtc { get; private set; }
 
     /// <summary>True if something else (usually the game) wrote the file after we loaded it.</summary>
-    public bool ChangedOnDisk => File.Exists(FilePath) && File.GetLastWriteTimeUtc(FilePath) != LoadedWriteTimeUtc;
+    public bool ChangedOnDisk
+    {
+        get
+        {
+            try { return !Matches(loadedDiskState, ReadDiskState(FilePath)); }
+            catch (IOException) { return true; }
+            catch (UnauthorizedAccessException) { return true; }
+        }
+    }
 
     private SaveFile(string filePath, JObject slot, Dictionary<string, JToken> sections,
-        Dictionary<string, byte[]> fingerprints, DateTime writeTimeUtc)
+        Dictionary<string, byte[]> fingerprints, DiskState diskState)
     {
-        FilePath = filePath;
+        FilePath = Path.GetFullPath(filePath);
         Slot = slot;
         this.sections = sections;
         this.fingerprints = fingerprints;
-        LoadedWriteTimeUtc = writeTimeUtc;
+        loadedDiskState = diskState;
+        LoadedWriteTimeUtc = diskState.WriteTimeUtc;
     }
 
     public string DisplayName => (string?)Slot["m_DisplayName"] ?? "";
@@ -70,38 +84,49 @@ public sealed class SaveFile
     public static SaveFile Load(string path)
     {
         var writeTime = File.GetLastWriteTimeUtc(path);
-        var slot = (JObject)TldJson.Parse(Encoding.UTF8.GetString(Lzf.Decompress(File.ReadAllBytes(path))));
+        var bytes = File.ReadAllBytes(path);
+        if (File.GetLastWriteTimeUtc(path) != writeTime)
+            throw new IOException("The save file changed while it was being read. Reload it and try again.");
+        var slot = ParseSlot(bytes);
 
         var sections = new Dictionary<string, JToken>();
         var fingerprints = new Dictionary<string, byte[]>();
-        if (slot["m_Dict"] is JObject dict)
+        foreach (var property in ((JObject)slot["m_Dict"]!).Properties())
         {
-            foreach (var property in dict.Properties())
-            {
-                var json = Lzf.Decompress(ReadBytes(property.Value));
-                fingerprints[property.Name] = SHA256.HashData(json);
-                sections[property.Name] = TldJson.Parse(Encoding.UTF8.GetString(json));
-            }
+            var json = Lzf.Decompress(ReadBytes(property.Value));
+            var section = TldJson.Parse(Utf8.GetString(json));
+            sections[property.Name] = section;
+            // Compare like with like: the game's whitespace and number spelling may differ from ours.
+            // Preserve the original encoded section until its parsed contents actually change.
+            fingerprints[property.Name] = SHA256.HashData(Utf8.GetBytes(TldJson.Serialize(section)));
         }
-        return new SaveFile(path, slot, sections, fingerprints, writeTime);
+        if (sections.GetValueOrDefault("global") is not JObject)
+            throw new InvalidDataException("The save must contain a global section that is a JSON object.");
+        return new SaveFile(path, slot, sections, fingerprints, new DiskState(writeTime, SHA256.HashData(bytes)));
     }
 
     /// <summary>Reads only the outer SlotData (name, mode, timestamp). Sections are left undecoded.</summary>
     public static JObject ReadHeader(string path)
     {
-        var slot = (JObject)TldJson.Parse(Encoding.UTF8.GetString(Lzf.Decompress(File.ReadAllBytes(path))));
+        var slot = ParseSlot(File.ReadAllBytes(path));
         slot.Remove("m_Dict");
         return slot;
     }
 
     public void Save(string path)
     {
+        path = Path.GetFullPath(path);
+        var isOriginal = string.Equals(path, FilePath,
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+        var expectedDiskState = isOriginal ? loadedDiskState : ReadDiskState(path);
+        EnsureUnchanged(path, expectedDiskState);
+
         var dict = new JObject();
         var changed = new List<string>();
         var newFingerprints = new Dictionary<string, byte[]>();
         foreach (var (key, value) in sections)
         {
-            var json = Encoding.UTF8.GetBytes(TldJson.Serialize(value));
+            var json = Utf8.GetBytes(TldJson.Serialize(value));
             var fingerprint = SHA256.HashData(json);
             var original = Slot["m_Dict"]?[key];
 
@@ -124,10 +149,11 @@ public sealed class SaveFile
         // Write first; only update our state once the file is really saved, so a failed save is retried in full
         var previousDict = Slot["m_Dict"];
         Slot["m_Dict"] = dict;
+        byte[] bytes;
         try
         {
-            var bytes = Lzf.Compress(Encoding.UTF8.GetBytes(TldJson.Serialize(Slot)));
-            WriteVerified(path, temp => File.WriteAllBytes(temp, bytes));
+            bytes = Lzf.Compress(Utf8.GetBytes(TldJson.Serialize(Slot)));
+            WriteVerified(path, temp => File.WriteAllBytes(temp, bytes), expectedDiskState);
         }
         catch
         {
@@ -137,30 +163,83 @@ public sealed class SaveFile
         foreach (var (key, fingerprint) in newFingerprints) fingerprints[key] = fingerprint;
         LastSaveChangedSections = changed;
 
-        if (string.Equals(Path.GetFullPath(path), Path.GetFullPath(FilePath), StringComparison.OrdinalIgnoreCase))
+        if (isOriginal)
+        {
             LoadedWriteTimeUtc = File.GetLastWriteTimeUtc(path);
+            loadedDiskState = new DiskState(LoadedWriteTimeUtc, SHA256.HashData(bytes));
+        }
     }
 
     /// <summary>
-    /// Replaces <paramref name="path"/> safely: <paramref name="writeTemp"/> writes "path.tmp", which is loaded
-    /// back as a save to prove it decodes, then swapped in with File.Replace. If anything fails (crash, full disk,
-    /// bad data) the original file is untouched and the temp file is removed.
+    /// Stages the output in a unique file beside <paramref name="path"/>, validates it as a save, checks that
+    /// the destination has not changed, then swaps it in with File.Replace. A failed write or validation leaves
+    /// the destination untouched. Cleanup only ever touches this operation's own temporary file.
     /// </summary>
     internal static void WriteVerified(string path, Action<string> writeTemp)
     {
-        var temp = path + ".tmp"; // the game only lists files named exactly sandbox<N>, so it never sees this
+        path = Path.GetFullPath(path);
+        WriteVerified(path, writeTemp, ReadDiskState(path));
+    }
+
+    private static void WriteVerified(string path, Action<string> writeTemp, DiskState? expectedDiskState)
+    {
+        var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        var ownsTemp = false;
         try
         {
+            // Reserve our own name. Never overwrite or clean up a temporary file from another instance.
+            using (new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+            ownsTemp = true;
             writeTemp(temp);
             Load(temp);
-            if (File.Exists(path)) File.Replace(temp, path, destinationBackupFileName: null);
+            EnsureUnchanged(path, expectedDiskState);
+            if (expectedDiskState is not null) File.Replace(temp, path, destinationBackupFileName: null);
             else File.Move(temp, path);
         }
-        catch
+        finally
         {
-            if (File.Exists(temp)) File.Delete(temp);
-            throw;
+            if (ownsTemp)
+            {
+                try { File.Delete(temp); }
+                catch (IOException) { /* Do not hide the original failure if cleanup is blocked. */ }
+                catch (UnauthorizedAccessException) { }
+            }
         }
+    }
+
+    private static JObject ParseSlot(byte[] bytes)
+    {
+        if (TldJson.Parse(Utf8.GetString(Lzf.Decompress(bytes))) is not JObject slot)
+            throw new InvalidDataException("The save root must be a JSON object.");
+        if (slot["m_Dict"] is not JObject)
+            throw new InvalidDataException("The save must contain an m_Dict object with its encoded sections.");
+        return slot;
+    }
+
+    private static DiskState? ReadDiskState(string path)
+    {
+        try
+        {
+            var writeTime = File.GetLastWriteTimeUtc(path);
+            var bytes = File.ReadAllBytes(path);
+            if (File.GetLastWriteTimeUtc(path) != writeTime)
+                throw new IOException("The save file changed while it was being checked. Reload it and try again.");
+            return new DiskState(writeTime, SHA256.HashData(bytes));
+        }
+        catch (FileNotFoundException) { return null; }
+        catch (DirectoryNotFoundException) { return null; }
+    }
+
+    private static bool Matches(DiskState? expected, DiskState? actual) =>
+        expected is null ? actual is null : actual is not null
+            && expected.WriteTimeUtc == actual.WriteTimeUtc
+            && expected.Fingerprint.AsSpan().SequenceEqual(actual.Fingerprint);
+
+    private static void EnsureUnchanged(string path, DiskState? expected)
+    {
+        if (!Matches(expected, ReadDiskState(path)))
+            throw new InvalidOperationException("The save file changed or was deleted after it was opened. " +
+                "Reload the save before saving again.");
     }
 
     private static byte[] ReadBytes(JToken value) => value.Type switch

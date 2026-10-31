@@ -1,7 +1,7 @@
 ﻿<Window x:Class="TldSaveEditor.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="TLD Survival Save Editor" Height="700" Width="1150"
+        Title="TLD Survival Save Editor · Improved" Height="700" Width="1150"
         Closing="Window_Closing">
     <Window.Resources>
         <FontFamily x:Key="Mono">Consolas</FontFamily>
@@ -10,12 +10,20 @@
             <Setter Property="Padding" Value="10,3" />
             <Setter Property="Margin" Value="0,0,6,0" />
         </Style>
+        <Style x:Key="NumericInput" TargetType="TextBox">
+            <Style.Triggers>
+                <Trigger Property="Validation.HasError" Value="True">
+                    <Setter Property="ToolTip"
+                            Value="{Binding RelativeSource={RelativeSource Self}, Path=(Validation.Errors)[0].ErrorContent}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
     </Window.Resources>
 
     <DockPanel>
         <!-- Toolbar -->
         <StackPanel x:Name="Toolbar" DockPanel.Dock="Top" Orientation="Horizontal" Margin="8">
-            <Button Content="Refresh" Click="Refresh_Click" ToolTip="Refresh the list of saves" />
+            <Button Content="Refresh" Click="Refresh_Click" ToolTip="Refresh the list of saves and keep your unsaved edits" />
             <Button Content="Reload save" Click="Reload_Click"
                     ToolTip="Load the open save again from disk. Unsaved edits are discarded (you're asked first)." />
             <Button Content="Open file…" Click="OpenFile_Click" />
@@ -101,7 +109,7 @@
                 </TabItem>
 
                 <!-- Player -->
-                <TabItem Header="Player">
+                <TabItem x:Name="PlayerTab" Header="Player">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <Grid x:Name="PlayerPanel" Margin="8">
                             <Grid.ColumnDefinitions>
@@ -119,7 +127,7 @@
                                     <Setter Property="IsMoveToPointEnabled" Value="True" />
                                     <Setter Property="Margin" Value="6,0" />
                                 </Style>
-                                <Style x:Key="ValueBox" TargetType="TextBox">
+                                <Style x:Key="ValueBox" TargetType="TextBox" BasedOn="{StaticResource NumericInput}">
                                     <Setter Property="Width" Value="60" />
                                     <Setter Property="TextAlignment" Value="Right" />
                                     <Setter Property="VerticalContentAlignment" Value="Center" />
@@ -147,28 +155,28 @@
                                             <TextBlock Grid.Row="0" Text="Condition %" VerticalAlignment="Center" />
                                             <Slider Grid.Row="0" Grid.Column="1" Minimum="0" Maximum="{Binding ConditionMax, Mode=OneWay}"
                                                     Value="{Binding Condition}" />
-                                            <TextBox Grid.Row="0" Grid.Column="2" Style="{StaticResource ValueBox}"
-                                                     Text="{Binding Condition, StringFormat={}{0:0.#}, UpdateSourceTrigger=LostFocus}" />
+                                            <TextBox x:Name="PlayerConditionBox" Grid.Row="0" Grid.Column="2" Style="{StaticResource ValueBox}"
+                                                     Text="{Binding Condition, StringFormat={}{0:0.#}, UpdateSourceTrigger=LostFocus, ValidatesOnExceptions=True}" />
 
                                             <TextBlock Grid.Row="1" Text="Calories (0 = starving)" VerticalAlignment="Center" />
                                             <Slider Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="2500" Value="{Binding Calories}" />
-                                            <TextBox Grid.Row="1" Grid.Column="2" Style="{StaticResource ValueBox}"
-                                                     Text="{Binding Calories, StringFormat={}{0:0}, UpdateSourceTrigger=LostFocus}" />
+                                            <TextBox x:Name="PlayerCaloriesBox" Grid.Row="1" Grid.Column="2" Style="{StaticResource ValueBox}"
+                                                     Text="{Binding Calories, StringFormat={}{0:0}, UpdateSourceTrigger=LostFocus, ValidatesOnExceptions=True}" />
 
                                             <TextBlock Grid.Row="2" Text="Thirst (0 = hydrated)" VerticalAlignment="Center" />
                                             <Slider Grid.Row="2" Grid.Column="1" Minimum="0" Maximum="100" Value="{Binding Thirst}" />
-                                            <TextBox Grid.Row="2" Grid.Column="2" Style="{StaticResource ValueBox}"
-                                                     Text="{Binding Thirst, StringFormat={}{0:0.#}, UpdateSourceTrigger=LostFocus}" />
+                                            <TextBox x:Name="PlayerThirstBox" Grid.Row="2" Grid.Column="2" Style="{StaticResource ValueBox}"
+                                                     Text="{Binding Thirst, StringFormat={}{0:0.#}, UpdateSourceTrigger=LostFocus, ValidatesOnExceptions=True}" />
 
                                             <TextBlock Grid.Row="3" Text="Fatigue (0 = rested)" VerticalAlignment="Center" />
                                             <Slider Grid.Row="3" Grid.Column="1" Minimum="0" Maximum="100" Value="{Binding Fatigue}" />
-                                            <TextBox Grid.Row="3" Grid.Column="2" Style="{StaticResource ValueBox}"
-                                                     Text="{Binding Fatigue, StringFormat={}{0:0.#}, UpdateSourceTrigger=LostFocus}" />
+                                            <TextBox x:Name="PlayerFatigueBox" Grid.Row="3" Grid.Column="2" Style="{StaticResource ValueBox}"
+                                                     Text="{Binding Fatigue, StringFormat={}{0:0.#}, UpdateSourceTrigger=LostFocus, ValidatesOnExceptions=True}" />
 
                                             <TextBlock Grid.Row="4" Text="Freezing (0 = warm)" VerticalAlignment="Center" />
                                             <Slider Grid.Row="4" Grid.Column="1" Minimum="0" Maximum="100" Value="{Binding Freezing}" />
-                                            <TextBox Grid.Row="4" Grid.Column="2" Style="{StaticResource ValueBox}"
-                                                     Text="{Binding Freezing, StringFormat={}{0:0.#}, UpdateSourceTrigger=LostFocus}" />
+                                            <TextBox x:Name="PlayerFreezingBox" Grid.Row="4" Grid.Column="2" Style="{StaticResource ValueBox}"
+                                                     Text="{Binding Freezing, StringFormat={}{0:0.#}, UpdateSourceTrigger=LostFocus, ValidatesOnExceptions=True}" />
                                         </Grid>
                                         <CheckBox Margin="0,8,0,0" IsChecked="{Binding WellFed}"
                                                   Content="Well Fed (+5 max condition)" />
@@ -262,7 +270,7 @@
                 </TabItem>
 
                 <!-- Inventory -->
-                <TabItem Header="Inventory">
+                <TabItem x:Name="InventoryTab" Header="Inventory">
                     <Grid Margin="8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="320" />
@@ -340,14 +348,15 @@
                                             Visibility="{Binding IsStackable, Converter={StaticResource BoolToVisibility}}">
                                     <TextBlock Text="Quantity" Width="90" VerticalAlignment="Center" />
                                     <Button Content="−" Width="30" Padding="0,3" Click="DecreaseUnits_Click" />
-                                    <TextBox Width="60" TextAlignment="Center" VerticalContentAlignment="Center" Margin="0,0,6,0"
-                                             Text="{Binding Units, UpdateSourceTrigger=LostFocus}" KeyDown="UnitsBox_KeyDown" />
+                                    <TextBox x:Name="ItemUnitsBox" Width="60" TextAlignment="Center" VerticalContentAlignment="Center" Margin="0,0,6,0"
+                                             Style="{StaticResource NumericInput}"
+                                             Text="{Binding Units, UpdateSourceTrigger=LostFocus, ValidatesOnExceptions=True}" KeyDown="UnitsBox_KeyDown" />
                                     <Button Content="+" Width="30" Padding="0,3" Click="IncreaseUnits_Click" />
                                 </StackPanel>
                                 <DockPanel Margin="0,8">
                                     <TextBlock Text="Condition %" Width="90" VerticalAlignment="Center" />
-                                    <TextBox DockPanel.Dock="Right" Width="60"
-                                             Text="{Binding ConditionPercent, UpdateSourceTrigger=LostFocus}" />
+                                    <TextBox x:Name="ItemConditionBox" DockPanel.Dock="Right" Width="60" Style="{StaticResource NumericInput}"
+                                             Text="{Binding ConditionPercent, UpdateSourceTrigger=LostFocus, ValidatesOnExceptions=True}" />
                                     <Slider Minimum="0" Maximum="100" Margin="0,0,8,0" VerticalAlignment="Center"
                                             Value="{Binding ConditionPercent}" />
                                 </DockPanel>

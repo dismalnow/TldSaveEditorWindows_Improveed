@@ -60,6 +60,7 @@ public partial class MainWindow : Window
             SavesList.ItemsSource = SaveLocator.FindSurvivalSaves();
             SavesList.SelectedItem = (SavesList.ItemsSource as List<SaveSlotInfo>)?
                 .FirstOrDefault(s => s.FilePath == save?.FilePath);
+            currentSlot = SavesList.SelectedItem as SaveSlotInfo;
             SetStatus($"Survival saves in {SaveLocator.SurvivalFolder}");
         }
         catch (Exception e)
@@ -74,7 +75,9 @@ public partial class MainWindow : Window
 
     private void Refresh_Click(object sender, RoutedEventArgs e)
     {
-        if (ConfirmDiscardChanges()) RefreshSaveList();
+        // Refresh only the list. Reload save is the separate action that discards edits.
+        RefreshSaveList();
+        if (isDirty) SetStatus("Save list refreshed.  Your unsaved edits are kept.");
     }
 
     /// <summary>Loads the open save again from disk, e.g. after the game saved it or after an error.</summary>
@@ -291,6 +294,12 @@ public partial class MainWindow : Window
         var item = inventory.Add(prefab, dialog.SelectedItem?.Template);
         if (item.IsStackable) item.Units = dialog.Quantity;
         item.PropertyChanged += Item_PropertyChanged;
+
+        // Reveal the item being added, without dropping filters that already match it.
+        if (!item.PrefabName.Contains(FilterBox.Text.Trim(), StringComparison.OrdinalIgnoreCase))
+            FilterBox.Clear();
+        if (CategoryFilter.SelectedItem is string category && category != AllCategories && item.CategoryName != category)
+            CategoryFilter.SelectedIndex = 0;
         items.Add(item);
         ItemsList.SelectedItem = item;
         ItemsList.ScrollIntoView(item);
@@ -366,6 +375,7 @@ public partial class MainWindow : Window
     private async void Save_Click(object sender, RoutedEventArgs e)
     {
         if (save is null || inventory is null) return;
+        if (!ValidateNumericInputs()) return;
 
         // The game keeps the save in memory: it would ignore or overwrite our changes
         if (SaveLocator.IsGameRunning())
@@ -376,15 +386,14 @@ public partial class MainWindow : Window
         }
 
         // Something (usually a game autosave) wrote the file after we loaded it: saving would erase that progress
-        if (save.ChangedOnDisk &&
-            MessageBox.Show(this,
-                $"This save file was modified after you opened it in the editor (at {File.GetLastWriteTime(save.FilePath):HH:mm:ss}), " +
-                "probably by the game.\n\nSaving now replaces that newer version with the one you loaded, plus your edits. " +
-                "The newer version is still backed up first.\n\nOverwrite anyway?\n\n" +
-                "(Choose No, then click Reload save to load the newer version.)",
-                "File changed on disk", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
+        if (save.ChangedOnDisk)
         {
-            SetStatus("Save cancelled: the file changed on disk.");
+            MessageBox.Show(this,
+                "This save file changed or was removed after you opened it.\n\n" +
+                "Click Reload save to load the version currently on disk, then make your edits again.  " +
+                "The editor will not overwrite a save that changed while it was open.",
+                "Reload required", MessageBoxButton.OK, MessageBoxImage.Warning);
+            SetStatus("Save cancelled: the file changed on disk.  Reload it before editing again.");
             return;
         }
 
@@ -483,11 +492,49 @@ public partial class MainWindow : Window
 
     // ------------------------------------------------------------ helpers
 
+    /// <summary>
+    /// Flush only pending textbox edits, then refuse to save if conversion or setter validation failed.
+    /// Untouched bindings are not written back, so loading a value does not normalize the original save.
+    /// </summary>
+    private bool ValidateNumericInputs()
+    {
+        (TextBox Box, TabItem Tab)[] inputs =
+        [
+            (PlayerConditionBox, PlayerTab),
+            (PlayerCaloriesBox, PlayerTab),
+            (PlayerThirstBox, PlayerTab),
+            (PlayerFatigueBox, PlayerTab),
+            (PlayerFreezingBox, PlayerTab),
+            (ItemUnitsBox, InventoryTab),
+            (ItemConditionBox, InventoryTab),
+        ];
+
+        foreach (var (box, tab) in inputs)
+        {
+            if (box.DataContext is null) continue;
+            var binding = box.GetBindingExpression(TextBox.TextProperty);
+            if (binding?.IsDirty == true) binding.UpdateSource();
+            if (!Validation.GetHasError(box)) continue;
+
+            Tabs.SelectedItem = tab;
+            SetStatus("Save cancelled.  Correct the highlighted numeric value first.");
+            MessageBox.Show(this,
+                "Correct the highlighted value before saving.  Quantities must be whole numbers; " +
+                "condition and status values must be finite numbers.",
+                "Invalid value", MessageBoxButton.OK, MessageBoxImage.Warning);
+            box.BringIntoView();
+            box.Focus();
+            box.SelectAll();
+            return false;
+        }
+        return true;
+    }
+
     private void SetDirty(bool dirty)
     {
         isDirty = dirty;
         SaveButton.IsEnabled = dirty && save is not null;
-        Title = "TLD Survival Save Editor" + (save is null ? "" : $" — {save.DisplayName}") + (dirty ? " *" : "");
+        Title = "TLD Survival Save Editor · Improved" + (save is null ? "" : $" · {save.DisplayName}") + (dirty ? " *" : "");
     }
 
     private bool ConfirmDiscardChanges() =>
